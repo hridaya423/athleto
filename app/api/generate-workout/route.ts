@@ -152,9 +152,9 @@ export async function POST(req: Request) {
 
     const completion = await anthropic.messages.create({
       model: "claude-3-opus-20240229",
-      max_tokens: 4000,
+      max_tokens: 3700,
       temperature: 0.5,
-      system: `You are a workout plan generation API that ONLY returns valid JSON with NO additional text or explanation. Your response must be a single JSON object matching this exact structure. Keep descriptions concise and limit the number of exercises per workout to 4-5 maximum to ensure the response fits within limits. The restDays array MUST contain exactly ${7 - body.daysPerWeek} days (numbers 1-7 representing days of the week) and MUST match these exact days: ${validRestDays.join(', ')}. Do not deviate from these rest days.
+      system: `You are a workout plan generation API that MUST return ONLY valid JSON with NO explanatory text, markdown formatting, or code blocks. Your response must be a single, parseable JSON object matching this exact structure. Do not include any markdown formatting like \`\`\`json or \`\`\`. The response should start with { and end with } with no other characters before or after. Keep descriptions concise and limit the number of exercises per workout to 4-5 maximum to ensure the response fits within limits. The restDays array MUST contain exactly ${7 - body.daysPerWeek} days (numbers 1-7 representing days of the week) and MUST match these exact days: ${validRestDays.join(', ')}. Do not deviate from these rest days.
 
 Primary and secondary muscles MUST ONLY use these exact values: ${validMuscles.join(', ')}. Do not use any other muscle names or variations.`,
       messages: [
@@ -184,9 +184,12 @@ Respond ONLY with the JSON object, no other text.`
       throw new Error('Failed to generate workout plan content');
     }
 
+    console.log('Raw plan content:', planContent)
+
     let workoutPlan: WorkoutPlan;
     try {
       const cleanJSON = planContent.replace(/```json\n?|\n?```/g, '').trim();
+      console.log('Cleaned JSON:', cleanJSON);
       let parsedJSON: unknown;
 
       try {
