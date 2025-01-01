@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import React from 'react';
 import { useSession, useSupabaseClient } from '@supabase/auth-helpers-react';
 import { 
@@ -270,7 +271,7 @@ const WorkoutPlansDisplay = () => {
         className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
       >
         <Dumbbell className="h-4 w-4" />
-        Log Today's Workout
+        Log Today&apos;s Workout
       </button>
     );
   };
