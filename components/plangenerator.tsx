@@ -212,7 +212,7 @@ export default function WorkoutPlanGenerator() {
     muscle.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
 
   return (
-    <div className="container mx-auto px-4 py-8 max-w-5xl">
+    <div className="container mx-auto px-4 py-8 max-w-5xl text-white">
       <Card className="border border-blue-500/20 shadow-lg shadow-blue-500/10 backdrop-blur-sm bg-black/40">
         <CardHeader className="space-y-4 pb-8">
           <div className="flex items-center gap-3">
@@ -243,7 +243,7 @@ export default function WorkoutPlanGenerator() {
                 value={formData.goalType}
                 onValueChange={(value) => setFormData(prev => ({ ...prev, goalType: value }))}
               >
-                <SelectTrigger className="bg-black/40 border-blue-500/20 hover:border-blue-400/40 transition-colors">
+                <SelectTrigger className="bg-black/40 border-blue-500/20 hover:border-blue-400/40 transition-colors text-white">
                   <SelectValue placeholder="Select your goal" />
                 </SelectTrigger>
                 <SelectContent>
@@ -265,7 +265,7 @@ export default function WorkoutPlanGenerator() {
                 value={formData.workoutType}
                 onValueChange={(value) => setFormData(prev => ({ ...prev, workoutType: value }))}
               >
-                <SelectTrigger className="bg-black/40 border-purple-500/20 hover:border-purple-400/40 transition-colors">
+                <SelectTrigger className="bg-black/40 border-purple-500/20 hover:border-purple-400/40 transition-colors text-white">
                   <SelectValue placeholder="Select workout type" />
                 </SelectTrigger>
                 <SelectContent>
@@ -323,7 +323,7 @@ export default function WorkoutPlanGenerator() {
                 <BicepsFlexed className="h-4 w-4" />
                 <Label className="font-medium">Focus Muscle Groups</Label>
               </div>
-              <div className="bg-blue-950/40 p-4 rounded-lg border border-blue-500/20">
+              <div className="bg-blue-950/40 p-4 rounded-lg border border-blue-500/20 text-white">
                 <Select
                   value={formData.focusMuscles[0] || ''}
                   onValueChange={(value) => setFormData(prev => ({ 
