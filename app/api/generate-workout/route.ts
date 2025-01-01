@@ -174,30 +174,41 @@ export async function POST(req: Request): Promise<NextResponse> {
         model: "claude-3-haiku-20240307",
         max_tokens: 4000,
         temperature: 0.7,
-        system: `You are a fitness trainer. Generate a workout plan as JSON with structure:
+        system: `You are a fitness trainer. Generate a valid JSON workout plan. Follow these rules exactly:
+1. Use proper JSON syntax with double quotes for all keys and string values
+2. No trailing commas
+3. Arrays must be properly terminated
+4. All strings must be properly quoted
+5. Numbers should not be quoted
+
+The structure must be exactly:
 {
-  "description": string,
-  "difficulty": "${VALID_DIFFICULTIES.join('|')}",
-  "restDays": [${restDays.join(',')}],
-  "workouts": [{
-    "name": string,
-    "description": string,
-    "day_of_week": number,
-    "estimated_duration": string,
-    "workout_type": "${VALID_WORKOUT_TYPES.join('|')}",
-    "exercises": [{
-      "name": string,
-      "description": string,
-      "sets": number,
-      "reps": number,
-      "rest_duration": string,
-      "order_in_workout": number,
-      "primary_muscles": ["${VALID_MUSCLE_GROUPS.join('","')}"],
-      "secondary_muscles": ["${VALID_MUSCLE_GROUPS.join('","')}"],
-      "equipment_needed": string[],
-      "exercise_type": "${VALID_WORKOUT_TYPES.join('|')}"
-    }]
-  }]
+  "description": "string value",
+  "difficulty": "${VALID_DIFFICULTIES.join('" | "')}",
+  "restDays": [${restDays.join(', ')}],
+  "workouts": [
+    {
+      "name": "string value",
+      "description": "string value",
+      "day_of_week": 1,
+      "estimated_duration": "30 minutes",
+      "workout_type": "${VALID_WORKOUT_TYPES.join('" | "')}",
+      "exercises": [
+        {
+          "name": "string value",
+          "description": "string value",
+          "sets": 3,
+          "reps": 12,
+          "rest_duration": "60 seconds",
+          "order_in_workout": 1,
+          "primary_muscles": ["${VALID_MUSCLE_GROUPS.join('", "')}", "..."],
+          "secondary_muscles": ["${VALID_MUSCLE_GROUPS.join('", "')}", "..."],
+          "equipment_needed": ["string value"],
+          "exercise_type": "${VALID_WORKOUT_TYPES.join('" | "')}"
+        }
+      ]
+    }
+  ]
 }`,
         messages: [{
           role: "user",
@@ -218,7 +229,20 @@ Return ONLY JSON.`
     const planContent = completion.content[0].type === 'text' ? completion.content[0].text : '';
     if (!planContent) throw new Error('No plan generated');
 
-    const workoutPlan = quickValidate(JSON.parse(planContent.replace(/```json\n?|\n?```/g, '').trim()));
+    const cleanedContent = planContent
+      .replace(/```json\n?|\n?```/g, '')
+      .replace(/[\u201C\u201D]/g, '"')
+      .replace(/,(\s*[}\]])/g, '$1')
+      .trim();
+    
+    let workoutPlan;
+    try {
+      workoutPlan = quickValidate(JSON.parse(cleanedContent));
+    } catch (e) {
+      console.error('JSON Parse Error:', e);
+      console.error('Cleaned Content:', cleanedContent);
+      throw new Error('Failed to parse workout plan: Invalid JSON structure');
+    }
 
     const plan = await withTimeout(
       saveWorkoutPlan(supabase, body.userId, body.goalType, workoutPlan, {
