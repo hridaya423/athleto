@@ -19,11 +19,25 @@ import { ErrorBoundary } from 'react-error-boundary';
 type Profile = Database['public']['Tables']['profiles']['Row'];
 type WorkoutPlan = Database['public']['Tables']['workout_plans']['Row'];
 type Workout = Database['public']['Tables']['workouts']['Row'];
-type ProgressMetric = Database['public']['Tables']['progress_metrics']['Row'];
 type UserMetadata = {
     full_name?: string;
     avatar_url?: string;
 };
+
+interface ProgressMetric {
+    id: string;
+    user_id: string;
+    measurement_date: string;
+    weight: number | null;
+    body_fat_percentage: number | null;
+    chest_cm: number | null;
+    waist_cm: number | null;
+    hips_cm: number | null;
+    current_bmi?: number | null;
+    created_at: string;
+    updated_at?: string;
+    notes: string | null;
+}
 
 interface EnhancedWorkoutPlan extends WorkoutPlan {
     workouts: Workout[];
@@ -547,7 +561,10 @@ function WeightProgressCard({ progressMetrics, weightProgress }: WeightProgressC
                                     labelStyle={{ color: '#E5E7EB' }}
                                     itemStyle={{ color: '#93C5FD' }}
                                     labelFormatter={(date) => new Date(date).toLocaleDateString()}
-                                    formatter={(value) => [`${value.toFixed(1)} kg`, 'Weight']}
+                                    formatter={(value: number | string) => {
+                                        const numValue = typeof value === 'string' ? parseFloat(value) : value;
+                                        return [`${numValue.toFixed(1)} kg`, 'Weight'];
+                                    }}
                                 />
                                 <Line 
                                     type="monotone" 
@@ -657,7 +674,10 @@ function BMITrackingCard({ progressMetrics }: BMITrackingCardProps) {
                                     labelStyle={{ color: '#E5E7EB' }}
                                     itemStyle={{ color: '#93C5FD' }}
                                     labelFormatter={(date) => new Date(date).toLocaleDateString()}
-                                    formatter={(value) => [`${value.toFixed(1)}`, 'BMI']}
+                                    formatter={(value: number | string) => {
+                                        const numValue = typeof value === 'string' ? parseFloat(value) : value;
+                                        return [`${numValue.toFixed(1)}`, 'BMI'];
+                                    }}
                                 />
                                 <Line 
                                     type="monotone" 
