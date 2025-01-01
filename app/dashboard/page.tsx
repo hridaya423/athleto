@@ -176,9 +176,9 @@ export default function Dashboard() {
 
             const todayNum = new Date().getDay() === 0 ? 7 : new Date().getDay();
             const isRestDay = planData?.rest_days?.includes(todayNum) ?? false;
-            const todayWorkout = !isRestDay && planData?.workouts
-                ? planData.workouts.find(w => w.day_of_week === todayNum) ?? null
-                : null;
+            const todayWorkout = !isRestDay && planData?.workouts 
+  ? planData.workouts.find((w: Workout) => w.day_of_week === todayNum) ?? null
+  : null;
 
             setDashboardData(prev => ({
                 ...prev,
