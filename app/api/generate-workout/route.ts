@@ -262,21 +262,6 @@ export async function POST(req: Request): Promise<NextResponse<ApiResponse>> {
       timeout: 20000
     });
 
-    const profilePromise = new Promise<{ data: { fitness_level?: string } | null, error: any }>(async (resolve) => {
-      const result = await supabase
-        .from('profiles')
-        .select('fitness_level')
-        .eq('id', body.userId)
-        .single();
-      resolve(result);
-    });
-
-    const { data: profile, error: profileError } = await withTimeout(profilePromise, 5000);
-
-    if (profileError || !profile) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
-
     const validRestDays = validateRestDays(body.daysPerWeek);
     const validMuscles = validateMuscleGroups(body.focusMuscles);
 
@@ -326,7 +311,6 @@ export async function POST(req: Request): Promise<NextResponse<ApiResponse>> {
 - Rest days: ${validRestDays.join(', ')}
 - Goal: ${body.goalType}
 - Additional notes: ${body.additionalNotes || 'None'}
-- Fitness level: ${profile.fitness_level || 'intermediate'}
 
 Return ONLY the JSON object, no additional text or explanations.`
           }
