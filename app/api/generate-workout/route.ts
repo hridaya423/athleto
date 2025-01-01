@@ -5,10 +5,6 @@ import type { Database } from '@/types/supabase';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 
-type MuscleGroup = typeof VALID_MUSCLE_GROUPS[number];
-type WorkoutType = typeof VALID_WORKOUT_TYPES[number];
-type Difficulty = typeof VALID_DIFFICULTIES[number];
-
 const VALID_MUSCLE_GROUPS = [
   'chest', 'back', 'shoulders', 'biceps', 'triceps',
   'forearms', 'core', 'quadriceps', 'hamstrings',
@@ -22,34 +18,9 @@ const VALID_WORKOUT_TYPES = [
 
 const VALID_DIFFICULTIES = ['beginner', 'intermediate', 'advanced'] as const;
 
-const ExerciseSchema = z.object({
-  name: z.string().min(1),
-  description: z.string().min(1),
-  sets: z.number().int().positive(),
-  reps: z.number().int().positive(),
-  rest_duration: z.string().min(1),
-  order_in_workout: z.number().int().nonnegative(),
-  primary_muscles: z.array(z.enum(VALID_MUSCLE_GROUPS)).min(1),
-  secondary_muscles: z.array(z.enum(VALID_MUSCLE_GROUPS)),
-  equipment_needed: z.array(z.string()),
-  exercise_type: z.enum(VALID_WORKOUT_TYPES)
-});
-
-const WorkoutSchema = z.object({
-  name: z.string().min(1),
-  description: z.string().min(1),
-  day_of_week: z.number().int().min(1).max(7),
-  estimated_duration: z.string().min(1),
-  workout_type: z.enum(VALID_WORKOUT_TYPES),
-  exercises: z.array(ExerciseSchema).min(1).max(5)
-});
-
-const WorkoutPlanSchema = z.object({
-  description: z.string().min(1),
-  difficulty: z.enum(VALID_DIFFICULTIES),
-  restDays: z.array(z.number().int().min(1).max(7)),
-  workouts: z.array(WorkoutSchema)
-});
+type MuscleGroup = typeof VALID_MUSCLE_GROUPS[number];
+type WorkoutType = typeof VALID_WORKOUT_TYPES[number];
+type Difficulty = typeof VALID_DIFFICULTIES[number];
 
 const RequestBodySchema = z.object({
   userId: z.string().uuid(),
@@ -61,8 +32,84 @@ const RequestBodySchema = z.object({
   additionalNotes: z.string().optional()
 });
 
-type Workout = z.infer<typeof WorkoutSchema>;
-type WorkoutPlan = z.infer<typeof WorkoutPlanSchema>;
+
+const isValidDifficulty = (x: any): x is Difficulty => 
+  VALID_DIFFICULTIES.includes(x);
+
+const isValidWorkoutType = (x: any): x is WorkoutType => 
+  VALID_WORKOUT_TYPES.includes(x);
+
+const isValidMuscleGroup = (x: any): x is MuscleGroup => 
+  VALID_MUSCLE_GROUPS.includes(x);
+
+interface Exercise {
+  name: string;
+  description: string;
+  sets: number;
+  reps: number;
+  rest_duration: string;
+  order_in_workout: number;
+  primary_muscles: MuscleGroup[];
+  secondary_muscles: MuscleGroup[];
+  equipment_needed: string[];
+  exercise_type: WorkoutType;
+}
+
+interface Workout {
+  name: string;
+  description: string;
+  day_of_week: number;
+  estimated_duration: string;
+  workout_type: WorkoutType;
+  exercises: Exercise[];
+}
+
+interface WorkoutPlan {
+  description: string;
+  difficulty: Difficulty;
+  restDays: number[];
+  workouts: Workout[];
+}
+
+const validateWorkoutPlan = (plan: any): WorkoutPlan => {
+  if (!plan?.description || typeof plan.description !== 'string') {
+    throw new Error('Invalid plan description');
+  }
+  
+  if (!isValidDifficulty(plan.difficulty)) {
+    throw new Error('Invalid difficulty level');
+  }
+
+  if (!Array.isArray(plan.workouts) || plan.workouts.length === 0) {
+    throw new Error('Plan must include workouts');
+  }
+
+  plan.workouts.forEach((workout: any, idx: number) => {
+    if (!workout.name || !workout.description || 
+        !Array.isArray(workout.exercises) || 
+        workout.exercises.length === 0 || 
+        workout.exercises.length > 5 ||
+        !isValidWorkoutType(workout.workout_type) ||
+        typeof workout.day_of_week !== 'number' ||
+        workout.day_of_week < 1 || 
+        workout.day_of_week > 7) {
+      throw new Error(`Invalid workout at index ${idx}`);
+    }
+    
+    workout.exercises.forEach((exercise: any, exIdx: number) => {
+      if (!exercise.name || !exercise.description ||
+          typeof exercise.sets !== 'number' || exercise.sets <= 0 ||
+          typeof exercise.reps !== 'number' || exercise.reps <= 0 ||
+          !Array.isArray(exercise.primary_muscles) || 
+          exercise.primary_muscles.length === 0 ||
+          !exercise.primary_muscles.every(isValidMuscleGroup)) {
+        throw new Error(`Invalid exercise at index ${exIdx} in workout ${idx}`);
+      }
+    });
+  });
+
+  return plan as WorkoutPlan;
+};
 
 const withTimeout = async <T>(
   promise: Promise<T>,
@@ -127,26 +174,21 @@ async function saveWorkoutPlan(
   workoutPlan: WorkoutPlan,
   planParams: PlanParams
 ): Promise<{ id: string }> {
-  const goalPromise = new Promise<{ data: { id: string } | null, error: any }>(async (resolve) => {
-    const result = await supabase
-      .from('fitness_goals')
-      .insert({
-        user_id: userId,
-        goal_type: goalType,
-        target_date: new Date(Date.now() + planParams.durationWeeks * 7 * 24 * 60 * 60 * 1000).toISOString(),
-        status: 'active',
-        specific_targets: {
-          workout_type: planParams.workoutType,
-          focus_muscles: planParams.focusMuscles,
-          days_per_week: planParams.daysPerWeek
-        }
-      })
-      .select('id')
-      .single();
-    resolve(result);
-  });
-
-  const { data: goal, error: goalError } = await goalPromise;
+  const { data: goal, error: goalError } = await supabase
+    .from('fitness_goals')
+    .insert({
+      user_id: userId,
+      goal_type: goalType,
+      target_date: new Date(Date.now() + planParams.durationWeeks * 7 * 24 * 60 * 60 * 1000).toISOString(),
+      status: 'active',
+      specific_targets: {
+        workout_type: planParams.workoutType,
+        focus_muscles: planParams.focusMuscles,
+        days_per_week: planParams.daysPerWeek
+      }
+    })
+    .select('id')
+    .single();
 
   if (goalError || !goal) {
     throw new Error(`Failed to create fitness goal: ${goalError?.message}`);
@@ -328,7 +370,7 @@ Return ONLY the JSON object, no additional text or explanations.`
     }
 
     const cleanJSON = planContent.replace(/```json\n?|\n?```/g, '').trim();
-    const workoutPlan = WorkoutPlanSchema.parse(JSON.parse(cleanJSON));
+    const workoutPlan = validateWorkoutPlan(JSON.parse(cleanJSON));
 
     const plan = await withTimeout(
       saveWorkoutPlan(supabase, body.userId, body.goalType, workoutPlan, {
