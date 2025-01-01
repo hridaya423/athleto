@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from '@/types/supabase';
 import Anthropic from '@anthropic-ai/sdk';
+import { z } from 'zod';
 
 const VALID_MUSCLE_GROUPS = [
   'chest', 'back', 'shoulders', 'biceps', 'triceps',
@@ -9,54 +10,53 @@ const VALID_MUSCLE_GROUPS = [
   'calves', 'glutes', 'traps', 'lats', 'lower_back'
 ] as const;
 
+const VALID_WORKOUT_TYPES = [
+  'powerlifting', 'bodyweight', 'hiit', 'strength',
+  'cardio', 'crossfit', 'endurance', 'circuit', 'isolation'
+] as const;
+
+const VALID_DIFFICULTIES = ['beginner', 'intermediate', 'advanced'] as const;
+
 type MuscleGroup = (typeof VALID_MUSCLE_GROUPS)[number];
-type WorkoutType = 'powerlifting' | 'bodyweight' | 'hiit' | 'strength' | 
-                  'cardio' | 'crossfit' | 'endurance' | 'circuit' | 'isolation';
-type Difficulty = 'beginner' | 'intermediate' | 'advanced';
 
-interface Exercise {
-  name: string;
-  description: string;
-  sets: number;
-  reps: number;
-  rest_duration: string;
-  order_in_workout: number;
-  primary_muscles: MuscleGroup[];
-  secondary_muscles: MuscleGroup[];
-  equipment_needed: string[];
-  exercise_type: WorkoutType;
-}
+const ExerciseSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  sets: z.number().int().positive(),
+  reps: z.number().int().positive(),
+  rest_duration: z.string(),
+  order_in_workout: z.number().int().nonnegative(),
+  primary_muscles: z.array(z.enum(VALID_MUSCLE_GROUPS)),
+  secondary_muscles: z.array(z.enum(VALID_MUSCLE_GROUPS)),
+  equipment_needed: z.array(z.string()),
+  exercise_type: z.enum(VALID_WORKOUT_TYPES)
+});
 
-interface Workout {
-  name: string;
-  description: string;
-  day_of_week: number;
-  estimated_duration: string;
-  workout_type: WorkoutType;
-  exercises: Exercise[];
-}
+const WorkoutSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  day_of_week: z.number().int().min(1).max(7),
+  estimated_duration: z.string(),
+  workout_type: z.enum(VALID_WORKOUT_TYPES),
+  exercises: z.array(ExerciseSchema).min(1).max(5)
+});
 
-interface WorkoutPlan {
-  description: string;
-  difficulty: Difficulty;
-  restDays: number[];
-  workouts: Workout[];
-}
+const WorkoutPlanSchema = z.object({
+  description: z.string(),
+  difficulty: z.enum(VALID_DIFFICULTIES),
+  restDays: z.array(z.number().int().min(1).max(7)),
+  workouts: z.array(WorkoutSchema)
+});
 
-interface RequestBody {
-  userId: string;
-  goalType: string;
-  workoutType: WorkoutType;
-  durationWeeks: number;
-  daysPerWeek: number;
-  focusMuscles: string[];
-  additionalNotes?: string;
-}
-
-interface Profile {
-  id: string;
-  fitness_level?: Difficulty;
-}
+const RequestBodySchema = z.object({
+  userId: z.string().uuid(),
+  goalType: z.string(),
+  workoutType: z.enum(VALID_WORKOUT_TYPES),
+  durationWeeks: z.number().int().positive().max(52),
+  daysPerWeek: z.number().int().min(1).max(7),
+  focusMuscles: z.array(z.enum(VALID_MUSCLE_GROUPS)).min(1),
+  additionalNotes: z.string().optional()
+});
 
 function validateRestDays(daysPerWeek: number): number[] {
   const allDays = [1, 2, 3, 4, 5, 6, 7];
@@ -71,46 +71,9 @@ function validateMuscleGroups(muscles: string[]): MuscleGroup[] {
   );
 }
 
-function parseWorkoutPlanJSON(jsonString: string): WorkoutPlan {
-  const plan = JSON.parse(jsonString) as Partial<WorkoutPlan>;
-  
-  if (!plan.restDays || !Array.isArray(plan.restDays) || plan.restDays.length > 7) {
-    throw new Error('Invalid rest days configuration');
-  }
-  
-  const invalidDays = plan.restDays.filter(day => !Number.isInteger(day) || day < 1 || day > 7);
-  if (invalidDays.length > 0) {
-    throw new Error('Rest days must be integers between 1 and 7');
-  }
-
-  if (!plan.workouts || !Array.isArray(plan.workouts)) {
-    throw new Error('Invalid workouts configuration');
-  }
-
-  const validatedWorkouts = plan.workouts.map(workout => ({
-    ...workout,
-    exercises: workout.exercises.map(exercise => ({
-      ...exercise,
-      primary_muscles: validateMuscleGroups(exercise.primary_muscles),
-      secondary_muscles: validateMuscleGroups(exercise.secondary_muscles)
-    }))
-  })) as Workout[];
-  
-  if (!plan.description || !plan.difficulty || !validatedWorkouts) {
-    throw new Error('Missing required workout plan fields');
-  }
-
-  return {
-    description: plan.description,
-    difficulty: plan.difficulty,
-    restDays: plan.restDays,
-    workouts: validatedWorkouts
-  };
-}
-
 const parseInterval = (duration: string): string => {
   const minutes = parseInt(duration.replace(/[^0-9]/g, ''));
-  if (isNaN(minutes)) return '30 minutes';
+  if (isNaN(minutes) || minutes <= 0) return '30 minutes';
   return `${minutes} minutes`;
 };
 
@@ -122,11 +85,8 @@ export async function POST(req: Request) {
       throw new Error('Missing required environment variables');
     }
 
-    const body = await req.json() as RequestBody;
-    if (!body.userId || !body.goalType || !body.workoutType || 
-        !body.durationWeeks || !body.daysPerWeek || !body.focusMuscles) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
-    }
+    const rawBody = await req.json();
+    const body = RequestBodySchema.parse(rawBody);
 
     const supabase = createClient<Database>(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -144,19 +104,58 @@ export async function POST(req: Request) {
       .single();
 
     if (profileError || !profile) {
-      throw new Error('User not found');
+      return NextResponse.json(
+        { error: 'User not found' },
+        { status: 404 }
+      );
     }
 
     const validRestDays = validateRestDays(body.daysPerWeek);
-    const validMuscles = validateMuscleGroups(VALID_MUSCLE_GROUPS as unknown as string[]);
 
     const completion = await anthropic.messages.create({
       model: "claude-3-opus-20240229",
-      max_tokens: 4200,
-      temperature: 0.5,
-      system: `You are a workout plan trainer and expert. Generate and return a valid JSON object containing a workout plan. Keep descriptions concise and limit the number of exercises per workout to 4-5 maximum to ensure the response fits within limits. The restDays array MUST contain exactly ${7 - body.daysPerWeek} days (numbers 1-7 representing days of the week) and MUST match these exact days: ${validRestDays.join(', ')}. Do not deviate from these rest days.
+      max_tokens: 4000,
+      temperature: 0.7,
+      system: `You are an expert fitness trainer specializing in creating personalized workout plans. Generate a detailed workout plan as a JSON object with this exact structure:
 
-Primary and secondary muscles MUST ONLY use these exact values: ${validMuscles.join(', ')}. Do not use any other muscle names or variations.`,
+{
+  "description": "Brief overview of the plan",
+  "difficulty": "${VALID_DIFFICULTIES.join('" | "')}",
+  "restDays": [${validRestDays.join(', ')}],
+  "workouts": [
+    {
+      "name": "Workout name",
+      "description": "Brief workout description",
+      "day_of_week": number(1-7),
+      "estimated_duration": "X minutes",
+      "workout_type": "${VALID_WORKOUT_TYPES.join('" | "')}",
+      "exercises": [
+        {
+          "name": "Exercise name",
+          "description": "Brief exercise description",
+          "sets": number,
+          "reps": number,
+          "rest_duration": "X minutes",
+          "order_in_workout": number,
+          "primary_muscles": ["${VALID_MUSCLE_GROUPS.join('", "')}"],
+          "secondary_muscles": ["${VALID_MUSCLE_GROUPS.join('", "')}"],
+          "equipment_needed": string[],
+          "exercise_type": "${VALID_WORKOUT_TYPES.join('" | "')}",
+        }
+      ]
+    }
+  ]
+}
+
+Guidelines:
+- Keep descriptions concise but informative
+- Limit exercises to 4-5 per workout
+- Rest days MUST be exactly: ${validRestDays.join(', ')}
+- Use ONLY the specified muscle groups
+- Ensure progressive overload across weeks
+- Match difficulty to user's fitness level
+- Include proper warm-up exercises
+- Vary exercise selection for engagement`,
       messages: [
         {
           role: "user",
@@ -167,50 +166,23 @@ Primary and secondary muscles MUST ONLY use these exact values: ${validMuscles.j
 - Days per week: ${body.daysPerWeek}
 - Rest days: ${validRestDays.join(', ')}
 - Goal: ${body.goalType}
-- Notes: ${body.additionalNotes || 'None'}
-- Fitness level: ${(profile as Profile).fitness_level || 'intermediate'}
+- Additional notes: ${body.additionalNotes || 'None'}
+- Fitness level: ${profile.fitness_level || 'intermediate'}
 
-Remember to ONLY use these muscle group names: ${validMuscles.join(', ')}
-
-Respond ONLY with the JSON object, no other text.`
+Return ONLY the JSON object, no additional text or explanations.`
         }
       ]
     });
 
     const planContent = completion.content[0].type === 'text' 
-    ? completion.content[0].text
-    : '';
+      ? completion.content[0].text
+      : '';
 
-    console.log('Raw API Response:', planContent);
-
-    if (planContent.startsWith('An error')) {
-      throw new Error(`API returned an error response: ${planContent}`);
-    }
-    
     if (!planContent) {
-      throw new Error('Failed to generate workout plan content');
+      throw new Error('Failed to generate workout plan');
     }
-    let workoutPlan: WorkoutPlan;
-    try {
-      const cleanJSON = planContent.replace(/```json\n?|\n?```/g, '').trim();
-      console.log('Cleaned JSON:', cleanJSON);
-      let parsedJSON: unknown;
-
-      try {
-        parsedJSON = JSON.parse(cleanJSON);
-      } catch (parseError) {
-        console.error('Initial JSON parsing error:', parseError);
-        const jsonMatch = cleanJSON.match(/\{(?:[^{}]|(\{[^{}]*\}))*\}/);
-        if (!jsonMatch) {
-          throw new Error('Could not find complete JSON object in response');
-        }
-        parsedJSON = JSON.parse(jsonMatch[0]);
-      }
-
-      workoutPlan = parseWorkoutPlanJSON(JSON.stringify(parsedJSON));
-    } catch (error) {
-      throw new Error(`Failed to parse workout plan JSON: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
+    const cleanJSON = planContent.replace(/```json\n?|\n?```/g, '').trim();
+    const workoutPlan = WorkoutPlanSchema.parse(JSON.parse(cleanJSON));
 
     const { data: goal, error: goalError } = await supabase
       .from('fitness_goals')
@@ -270,26 +242,30 @@ Respond ONLY with the JSON object, no other text.`
         throw new Error(`Failed to create workout: ${workoutError?.message}`);
       }
 
-      for (const exercise of workout.exercises) {
-        const { error: exerciseError } = await supabase
-          .from('exercises')
-          .insert({
-            workout_id: workoutData.id,
-            name: exercise.name,
-            description: exercise.description,
-            sets: exercise.sets,
-            reps: exercise.reps,
-            rest_duration: parseInterval(exercise.rest_duration),
-            order_in_workout: exercise.order_in_workout,
-            exercise_type: exercise.exercise_type,
-            primary_muscles: exercise.primary_muscles,
-            secondary_muscles: exercise.secondary_muscles,
-            equipment_needed: exercise.equipment_needed
-          });
 
-        if (exerciseError) {
-          throw new Error(`Failed to create exercise: ${exerciseError.message}`);
-        }
+      const exercisePromises = workout.exercises.map(exercise => 
+        supabase.from('exercises').insert({
+          workout_id: workoutData.id,
+          name: exercise.name,
+          description: exercise.description,
+          sets: exercise.sets,
+          reps: exercise.reps,
+          rest_duration: parseInterval(exercise.rest_duration),
+          order_in_workout: exercise.order_in_workout,
+          exercise_type: exercise.exercise_type,
+          primary_muscles: exercise.primary_muscles,
+          secondary_muscles: exercise.secondary_muscles,
+          equipment_needed: exercise.equipment_needed
+        })
+      );
+
+      const exerciseResults = await Promise.allSettled(exercisePromises);
+      const failedExercises = exerciseResults.filter(
+        (result): result is PromiseRejectedResult => result.status === 'rejected'
+      );
+
+      if (failedExercises.length > 0) {
+        throw new Error(`Failed to create some exercises: ${failedExercises[0].reason}`);
       }
     }
 
@@ -299,12 +275,21 @@ Respond ONLY with the JSON object, no other text.`
       plan: {
         id: plan.id,
         description: workoutPlan.description,
-        difficulty: workoutPlan.difficulty
+        difficulty: workoutPlan.difficulty,
+        workouts: workoutPlan.workouts.length
       }
     });
 
   } catch (error) {
     console.error('API Error:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: error.issues },
+        { status: 400 }
+      );
+    }
+
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Internal server error' },
       { status: 500 }
