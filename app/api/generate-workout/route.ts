@@ -1,8 +1,13 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from '@/types/supabase';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
+
+type MuscleGroup = typeof VALID_MUSCLE_GROUPS[number];
+type WorkoutType = typeof VALID_WORKOUT_TYPES[number];
+type Difficulty = typeof VALID_DIFFICULTIES[number];
 
 const VALID_MUSCLE_GROUPS = [
   'chest', 'back', 'shoulders', 'biceps', 'triceps',
@@ -17,32 +22,30 @@ const VALID_WORKOUT_TYPES = [
 
 const VALID_DIFFICULTIES = ['beginner', 'intermediate', 'advanced'] as const;
 
-type MuscleGroup = (typeof VALID_MUSCLE_GROUPS)[number];
-
 const ExerciseSchema = z.object({
-  name: z.string(),
-  description: z.string(),
+  name: z.string().min(1),
+  description: z.string().min(1),
   sets: z.number().int().positive(),
   reps: z.number().int().positive(),
-  rest_duration: z.string(),
+  rest_duration: z.string().min(1),
   order_in_workout: z.number().int().nonnegative(),
-  primary_muscles: z.array(z.enum(VALID_MUSCLE_GROUPS)),
+  primary_muscles: z.array(z.enum(VALID_MUSCLE_GROUPS)).min(1),
   secondary_muscles: z.array(z.enum(VALID_MUSCLE_GROUPS)),
   equipment_needed: z.array(z.string()),
   exercise_type: z.enum(VALID_WORKOUT_TYPES)
 });
 
 const WorkoutSchema = z.object({
-  name: z.string(),
-  description: z.string(),
+  name: z.string().min(1),
+  description: z.string().min(1),
   day_of_week: z.number().int().min(1).max(7),
-  estimated_duration: z.string(),
+  estimated_duration: z.string().min(1),
   workout_type: z.enum(VALID_WORKOUT_TYPES),
   exercises: z.array(ExerciseSchema).min(1).max(5)
 });
 
 const WorkoutPlanSchema = z.object({
-  description: z.string(),
+  description: z.string().min(1),
   difficulty: z.enum(VALID_DIFFICULTIES),
   restDays: z.array(z.number().int().min(1).max(7)),
   workouts: z.array(WorkoutSchema)
@@ -50,7 +53,7 @@ const WorkoutPlanSchema = z.object({
 
 const RequestBodySchema = z.object({
   userId: z.string().uuid(),
-  goalType: z.string(),
+  goalType: z.string().min(1),
   workoutType: z.enum(VALID_WORKOUT_TYPES),
   durationWeeks: z.number().int().positive().max(52),
   daysPerWeek: z.number().int().min(1).max(7),
@@ -58,26 +61,182 @@ const RequestBodySchema = z.object({
   additionalNotes: z.string().optional()
 });
 
-function validateRestDays(daysPerWeek: number): number[] {
-  const allDays = [1, 2, 3, 4, 5, 6, 7];
+type Workout = z.infer<typeof WorkoutSchema>;
+type WorkoutPlan = z.infer<typeof WorkoutPlanSchema>;
+
+const withTimeout = async <T>(
+  promise: Promise<T>,
+  timeoutMs: number = 25000
+): Promise<T> => {
+  let timeoutId: NodeJS.Timeout;
+  
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('Request timeout')), timeoutMs);
+  });
+
+  try {
+    const result = await Promise.race([promise, timeoutPromise]);
+    clearTimeout(timeoutId!);
+    return result;
+  } catch (error) {
+    clearTimeout(timeoutId!);
+    throw error;
+  }
+};
+
+const validateRestDays = (daysPerWeek: number): number[] => {
+  const allDays = [1, 2, 3, 4, 5, 6, 7] as const;
   const restDaysCount = 7 - daysPerWeek;
+  
+  if (restDaysCount < 0 || restDaysCount > 6) {
+    throw new Error('Invalid days per week');
+  }
+  
   const shuffled = [...allDays].sort(() => 0.5 - Math.random());
   return shuffled.slice(0, restDaysCount).sort((a, b) => a - b);
-}
+};
 
-function validateMuscleGroups(muscles: string[]): MuscleGroup[] {
-  return muscles.filter((muscle): muscle is MuscleGroup => 
+const validateMuscleGroups = (muscles: string[]): MuscleGroup[] => {
+  const validatedMuscles = muscles.filter((muscle): muscle is MuscleGroup => 
     VALID_MUSCLE_GROUPS.includes(muscle as MuscleGroup)
   );
-}
+  
+  if (validatedMuscles.length === 0) {
+    throw new Error('No valid muscle groups provided');
+  }
+  
+  return validatedMuscles;
+};
 
 const parseInterval = (duration: string): string => {
   const minutes = parseInt(duration.replace(/[^0-9]/g, ''));
-  if (isNaN(minutes) || minutes <= 0) return '30 minutes';
-  return `${minutes} minutes`;
+  return isNaN(minutes) || minutes <= 0 ? '30 minutes' : `${minutes} minutes`;
 };
 
-export async function POST(req: Request) {
+interface PlanParams {
+  durationWeeks: number;
+  workoutType: WorkoutType;
+  focusMuscles: MuscleGroup[];
+  daysPerWeek: number;
+}
+
+async function saveWorkoutPlan(
+  supabase: ReturnType<typeof createClient<Database>>,
+  userId: string,
+  goalType: string,
+  workoutPlan: WorkoutPlan,
+  planParams: PlanParams
+): Promise<{ id: string }> {
+  const goalPromise = new Promise<{ data: { id: string } | null, error: any }>(async (resolve) => {
+    const result = await supabase
+      .from('fitness_goals')
+      .insert({
+        user_id: userId,
+        goal_type: goalType,
+        target_date: new Date(Date.now() + planParams.durationWeeks * 7 * 24 * 60 * 60 * 1000).toISOString(),
+        status: 'active',
+        specific_targets: {
+          workout_type: planParams.workoutType,
+          focus_muscles: planParams.focusMuscles,
+          days_per_week: planParams.daysPerWeek
+        }
+      })
+      .select('id')
+      .single();
+    resolve(result);
+  });
+
+  const { data: goal, error: goalError } = await goalPromise;
+
+  if (goalError || !goal) {
+    throw new Error(`Failed to create fitness goal: ${goalError?.message}`);
+  }
+
+  const { data: plan, error: planError } = await supabase
+    .from('workout_plans')
+    .insert({
+      user_id: userId,
+      goal_id: goal.id,
+      name: `${goalType} - ${planParams.workoutType} Plan`,
+      description: workoutPlan.description,
+      duration_weeks: planParams.durationWeeks,
+      difficulty: workoutPlan.difficulty,
+      is_active: true,
+      focus_muscles: planParams.focusMuscles,
+      rest_days: workoutPlan.restDays
+    })
+    .select('id')
+    .single();
+
+  if (planError || !plan) {
+    throw new Error(`Failed to create workout plan: ${planError?.message}`);
+  }
+
+  await Promise.all(workoutPlan.workouts.map(workout => 
+    processWorkout(supabase, plan.id, workout)
+  ));
+
+  return plan;
+}
+
+async function processWorkout(
+  supabase: ReturnType<typeof createClient<Database>>,
+  planId: string,
+  workout: Workout
+): Promise<void> {
+  const { data: workoutData, error: workoutError } = await supabase
+    .from('workouts')
+    .insert({
+      plan_id: planId,
+      name: workout.name,
+      description: workout.description,
+      day_of_week: workout.day_of_week,
+      estimated_duration: parseInterval(workout.estimated_duration),
+      workout_type: workout.workout_type
+    })
+    .select('id')
+    .single();
+
+  if (workoutError || !workoutData) {
+    throw new Error(`Failed to create workout: ${workoutError?.message}`);
+  }
+
+  await Promise.all(workout.exercises.map(exercise =>
+    supabase.from('exercises').insert({
+      workout_id: workoutData.id,
+      name: exercise.name,
+      description: exercise.description,
+      sets: exercise.sets,
+      reps: exercise.reps,
+      rest_duration: parseInterval(exercise.rest_duration),
+      order_in_workout: exercise.order_in_workout,
+      exercise_type: exercise.exercise_type,
+      primary_muscles: exercise.primary_muscles,
+      secondary_muscles: exercise.secondary_muscles,
+      equipment_needed: exercise.equipment_needed
+    })
+  ));
+}
+
+interface SuccessResponse {
+  success: true;
+  message: string;
+  plan: {
+    id: string;
+    description: string;
+    difficulty: Difficulty;
+    workouts: number;
+  };
+}
+
+interface ErrorResponse {
+  error: string;
+  details?: z.ZodError['issues'];
+}
+
+type ApiResponse = SuccessResponse | ErrorResponse;
+
+export async function POST(req: Request): Promise<NextResponse<ApiResponse>> {
   try {
     if (!process.env.ANTHROPIC_API_KEY || 
         !process.env.NEXT_PUBLIC_SUPABASE_URL || 
@@ -90,33 +249,43 @@ export async function POST(req: Request) {
 
     const supabase = createClient<Database>(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY
+      process.env.SUPABASE_SERVICE_ROLE_KEY,
+      {
+        auth: { persistSession: false },
+        db: { schema: 'public' }
+      }
     );
     
     const anthropic = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY,
+      maxRetries: 2,
+      timeout: 20000
     });
 
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', body.userId)
-      .single();
+    const profilePromise = new Promise<{ data: { fitness_level?: string } | null, error: any }>(async (resolve) => {
+      const result = await supabase
+        .from('profiles')
+        .select('fitness_level')
+        .eq('id', body.userId)
+        .single();
+      resolve(result);
+    });
+
+    const { data: profile, error: profileError } = await withTimeout(profilePromise, 5000);
 
     if (profileError || !profile) {
-      return NextResponse.json(
-        { error: 'User not found' },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
 
     const validRestDays = validateRestDays(body.daysPerWeek);
+    const validMuscles = validateMuscleGroups(body.focusMuscles);
 
-    const completion = await anthropic.messages.create({
-      model: "claude-3-opus-20240229",
-      max_tokens: 4000,
-      temperature: 0.7,
-      system: `You are an expert fitness trainer specializing in creating personalized workout plans. Generate a detailed workout plan as a JSON object with this exact structure:
+    const completion = await withTimeout(
+      anthropic.messages.create({
+        model: "claude-3-opus-20240229",
+        max_tokens: 4000,
+        temperature: 0.7,
+        system: `You are an expert fitness trainer specializing in creating personalized workout plans. Generate a detailed workout plan as a JSON object with this exact structure:
 
 {
   "description": "Brief overview of the plan",
@@ -145,24 +314,14 @@ export async function POST(req: Request) {
       ]
     }
   ]
-}
-
-Guidelines:
-- Keep descriptions concise but informative
-- Limit exercises to 4-5 per workout
-- Rest days MUST be exactly: ${validRestDays.join(', ')}
-- Use ONLY the specified muscle groups
-- Ensure progressive overload across weeks
-- Match difficulty to user's fitness level
-- Include proper warm-up exercises
-- Vary exercise selection for engagement`,
-      messages: [
-        {
-          role: "user",
-          content: `Create a workout plan with these parameters:
+}`,
+        messages: [
+          {
+            role: "user",
+            content: `Create a workout plan with these parameters:
 - Duration: ${body.durationWeeks} weeks
 - Type: ${body.workoutType}
-- Focus muscles: ${validateMuscleGroups(body.focusMuscles).join(', ')}
+- Focus muscles: ${validMuscles.join(', ')}
 - Days per week: ${body.daysPerWeek}
 - Rest days: ${validRestDays.join(', ')}
 - Goal: ${body.goalType}
@@ -170,9 +329,11 @@ Guidelines:
 - Fitness level: ${profile.fitness_level || 'intermediate'}
 
 Return ONLY the JSON object, no additional text or explanations.`
-        }
-      ]
-    });
+          }
+        ]
+      }),
+      20000
+    );
 
     const planContent = completion.content[0].type === 'text' 
       ? completion.content[0].text
@@ -181,93 +342,19 @@ Return ONLY the JSON object, no additional text or explanations.`
     if (!planContent) {
       throw new Error('Failed to generate workout plan');
     }
+
     const cleanJSON = planContent.replace(/```json\n?|\n?```/g, '').trim();
     const workoutPlan = WorkoutPlanSchema.parse(JSON.parse(cleanJSON));
 
-    const { data: goal, error: goalError } = await supabase
-      .from('fitness_goals')
-      .insert({
-        user_id: body.userId,
-        goal_type: body.goalType,
-        target_date: new Date(Date.now() + body.durationWeeks * 7 * 24 * 60 * 60 * 1000).toISOString(),
-        status: 'active',
-        specific_targets: {
-          workout_type: body.workoutType,
-          focus_muscles: validateMuscleGroups(body.focusMuscles),
-          days_per_week: body.daysPerWeek
-        }
-      })
-      .select()
-      .single();
-
-    if (goalError || !goal) {
-      throw new Error(`Failed to create fitness goal: ${goalError?.message}`);
-    }
-
-    const { data: plan, error: planError } = await supabase
-      .from('workout_plans')
-      .insert({
-        user_id: body.userId,
-        goal_id: goal.id,
-        name: `${body.goalType} - ${body.workoutType} Plan`,
-        description: workoutPlan.description,
-        duration_weeks: body.durationWeeks,
-        difficulty: workoutPlan.difficulty,
-        is_active: true,
-        focus_muscles: validateMuscleGroups(body.focusMuscles),
-        rest_days: workoutPlan.restDays
-      })
-      .select()
-      .single();
-
-    if (planError || !plan) {
-      throw new Error(`Failed to create workout plan: ${planError?.message}`);
-    }
-
-    for (const workout of workoutPlan.workouts) {
-      const { data: workoutData, error: workoutError } = await supabase
-        .from('workouts')
-        .insert({
-          plan_id: plan.id,
-          name: workout.name,
-          description: workout.description,
-          day_of_week: workout.day_of_week,
-          estimated_duration: parseInterval(workout.estimated_duration),
-          workout_type: workout.workout_type
-        })
-        .select()
-        .single();
-
-      if (workoutError || !workoutData) {
-        throw new Error(`Failed to create workout: ${workoutError?.message}`);
-      }
-
-
-      const exercisePromises = workout.exercises.map(exercise => 
-        supabase.from('exercises').insert({
-          workout_id: workoutData.id,
-          name: exercise.name,
-          description: exercise.description,
-          sets: exercise.sets,
-          reps: exercise.reps,
-          rest_duration: parseInterval(exercise.rest_duration),
-          order_in_workout: exercise.order_in_workout,
-          exercise_type: exercise.exercise_type,
-          primary_muscles: exercise.primary_muscles,
-          secondary_muscles: exercise.secondary_muscles,
-          equipment_needed: exercise.equipment_needed
-        })
-      );
-
-      const exerciseResults = await Promise.allSettled(exercisePromises);
-      const failedExercises = exerciseResults.filter(
-        (result): result is PromiseRejectedResult => result.status === 'rejected'
-      );
-
-      if (failedExercises.length > 0) {
-        throw new Error(`Failed to create some exercises: ${failedExercises[0].reason}`);
-      }
-    }
+    const plan = await withTimeout(
+      saveWorkoutPlan(supabase, body.userId, body.goalType, workoutPlan, {
+        durationWeeks: body.durationWeeks,
+        workoutType: body.workoutType,
+        focusMuscles: validMuscles,
+        daysPerWeek: body.daysPerWeek
+      }),
+      25000
+    );
 
     return NextResponse.json({
       success: true,
@@ -290,9 +377,9 @@ Return ONLY the JSON object, no additional text or explanations.`
       );
     }
 
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Internal server error' },
-      { status: 500 }
-    );
+    const errorMessage = error instanceof Error ? error.message : 'Internal server error';
+    const status = errorMessage.includes('timeout') ? 504 : 500;
+
+    return NextResponse.json({ error: errorMessage }, { status });
   }
 }
