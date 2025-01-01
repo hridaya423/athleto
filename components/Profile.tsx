@@ -14,7 +14,7 @@ type Profile = Database['public']['Tables']['profiles']['Row'];
 type ProfileUpdate = Database['public']['Tables']['profiles']['Update'];
 type ActivityLevel = 'sedentary' | 'lightly_active' | 'moderately_active' | 'very_active';
 type FitnessLevel = 'beginner' | 'intermediate' | 'advanced';
-
+type Gender = 'male' | 'female' | 'other' | null;
 
 const fitnessLevels: FitnessLevel[] = ['beginner', 'intermediate', 'advanced'];
 const activityLevels: ActivityLevel[] = ['sedentary', 'lightly_active', 'moderately_active', 'very_active'];
@@ -107,7 +107,7 @@ export default function ProfilePage() {
     }
   }, [profile.height, profile.weight]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setSaving(true);
     setMessage(null);
@@ -123,9 +123,9 @@ export default function ProfilePage() {
         height: profile.height,
         weight: profile.weight,
         age: profile.age,
-        gender: profile.gender,
-        fitness_level: profile.fitness_level,
-        activity_level: profile.activity_level,
+        gender: profile.gender as Gender,
+        fitness_level: profile.fitness_level as FitnessLevel,
+        activity_level: profile.activity_level as ActivityLevel,
         current_bmi: profile.current_bmi,
         target_weight: profile.target_weight,
         medical_conditions: profile.medical_conditions,
@@ -152,6 +152,15 @@ export default function ProfilePage() {
       setSaving(false);
     }
   };
+
+  const handleActivityLevelChange = (value: string) => {
+    setProfile(prev => ({ ...prev, activity_level: value as ActivityLevel }));
+  };
+
+  const handleFitnessLevelChange = (value: string) => {
+    setProfile(prev => ({ ...prev, fitness_level: value as FitnessLevel }));
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
@@ -282,7 +291,7 @@ export default function ProfilePage() {
                 </Label>
                 <Select
                   value={profile.fitness_level || ''}
-                  onValueChange={(value) => setProfile(prev => ({ ...prev, fitness_level: value }))}
+                  onValueChange={handleFitnessLevelChange}
                 >
                   <SelectTrigger className="bg-gray-800/50 border-blue-500/20 text-blue-100">
                     <SelectValue placeholder="Select fitness level" />
@@ -303,7 +312,7 @@ export default function ProfilePage() {
                 </Label>
                 <Select
                   value={profile.activity_level || ''}
-                  onValueChange={(value) => setProfile(prev => ({ ...prev, activity_level: value }))}
+                  onValueChange={handleActivityLevelChange}
                 >
                   <SelectTrigger className="bg-gray-800/50 border-blue-500/20 text-blue-100">
                     <SelectValue placeholder="Select activity level" />
