@@ -78,72 +78,94 @@ async function saveWorkoutPlan(
     daysPerWeek: number;
   }
 ): Promise<{ id: string }> {
-  const [goalResult, planResult] = await Promise.all([
-    supabase
-      .from('fitness_goals')
-      .insert({
-        user_id: userId,
-        goal_type: goalType,
-        target_date: new Date(Date.now() + planParams.durationWeeks * 7 * 24 * 60 * 60 * 1000).toISOString(),
-        status: 'active',
-        specific_targets: {
-          workout_type: planParams.workoutType,
-          focus_muscles: planParams.focusMuscles,
-          days_per_week: planParams.daysPerWeek
-        }
-      })
-      .select('id')
-      .single(),
-    
-    supabase
-      .from('workout_plans')
-      .insert({
-        user_id: userId,
-        description: workoutPlan.description,
-        duration_weeks: planParams.durationWeeks,
-        difficulty: workoutPlan.difficulty,
-        is_active: true,
+  const { data: goal, error: goalError } = await supabase
+    .from('fitness_goals')
+    .insert({
+      user_id: userId,
+      goal_type: goalType,
+      target_date: new Date(Date.now() + planParams.durationWeeks * 7 * 24 * 60 * 60 * 1000).toISOString(),
+      status: 'active',
+      specific_targets: {
+        workout_type: planParams.workoutType,
         focus_muscles: planParams.focusMuscles,
-        rest_days: workoutPlan.restDays
+        days_per_week: planParams.daysPerWeek
+      }
+    })
+    .select('id')
+    .single();
+
+  if (goalError) {
+    console.error('Goal creation error:', goalError);
+    throw new Error(`Failed to create fitness goal: ${goalError.message}`);
+  }
+
+  const { data: plan, error: planError } = await supabase
+    .from('workout_plans')
+    .insert({
+      user_id: userId,
+      goal_id: goal.id,
+      name: `${goalType} - ${planParams.workoutType} Plan`,
+      description: workoutPlan.description,
+      duration_weeks: planParams.durationWeeks,
+      difficulty: workoutPlan.difficulty,
+      is_active: true,
+      focus_muscles: planParams.focusMuscles,
+      rest_days: workoutPlan.restDays
+    })
+    .select('id')
+    .single();
+
+  if (planError) {
+    console.error('Plan creation error:', planError);
+    throw new Error(`Failed to create workout plan: ${planError.message}`);
+  }
+
+  for (const workout of workoutPlan.workouts) {
+    const { data: workoutData, error: workoutError } = await supabase
+      .from('workouts')
+      .insert({
+        plan_id: plan.id,
+        name: workout.name,
+        description: workout.description,
+        day_of_week: workout.day_of_week,
+        estimated_duration: workout.estimated_duration,
+        workout_type: workout.workout_type
       })
       .select('id')
-      .single()
-  ]);
+      .single();
 
-  if (goalResult.error || !goalResult.data) throw new Error('Failed to create goal');
-  if (planResult.error || !planResult.data) throw new Error('Failed to create plan');
+    if (workoutError) {
+      console.error('Workout creation error:', workoutError);
+      throw new Error(`Failed to create workout: ${workoutError.message}`);
+    }
 
-  const workoutInserts = workoutPlan.workouts.map(workout => ({
-    plan_id: planResult.data.id,
-    name: workout.name,
-    description: workout.description,
-    day_of_week: workout.day_of_week,
-    estimated_duration: workout.estimated_duration,
-    workout_type: workout.workout_type,
-    exercises: workout.exercises
-  }));
+    const exercisePromises = workout.exercises.map(exercise =>
+      supabase
+        .from('exercises')
+        .insert({
+          workout_id: workoutData.id,
+          name: exercise.name,
+          description: exercise.description,
+          sets: exercise.sets,
+          reps: exercise.reps,
+          rest_duration: exercise.rest_duration,
+          order_in_workout: exercise.order_in_workout,
+          exercise_type: exercise.exercise_type,
+          primary_muscles: exercise.primary_muscles,
+          secondary_muscles: exercise.secondary_muscles,
+          equipment_needed: exercise.equipment_needed
+        })
+    );
 
-  const { data: workouts, error: workoutsError } = await supabase
-    .from('workouts')
-    .insert(workoutInserts)
-    .select('id');
+    try {
+      await Promise.all(exercisePromises);
+    } catch (error) {
+      console.error('Exercise creation error:', error);
+      throw new Error('Failed to create exercises');
+    }
+  }
 
-  if (workoutsError || !workouts) throw new Error('Failed to create workouts');
-
-  const exerciseInserts = workouts.flatMap((workout, idx) => 
-    workoutPlan.workouts[idx].exercises.map(exercise => ({
-      workout_id: workout.id,
-      ...exercise
-    }))
-  );
-
-  const { error: exercisesError } = await supabase
-    .from('exercises')
-    .insert(exerciseInserts);
-
-  if (exercisesError) throw new Error('Failed to create exercises');
-
-  return planResult.data;
+  return plan;
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -230,7 +252,7 @@ Return ONLY JSON.`
     if (!planContent) throw new Error('No plan generated');
 
     const cleanedContent = planContent
-      .replace(/```json\n?|\n?```/g, '')
+      .replace(/```json\n?|\n?```/g, '') 
       .replace(/[\u201C\u201D]/g, '"')
       .replace(/,(\s*[}\]])/g, '$1')
       .trim();
