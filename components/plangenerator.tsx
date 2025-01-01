@@ -409,7 +409,7 @@ export default function WorkoutPlanGenerator() {
       {message && (
         <Alert 
           className="mt-6 border-l-4 border-l-blue-500 shadow-lg animate-fadeIn bg-white" 
-          variant={message.type === 'error' ? 'destructive' : message.type === 'warning' ? 'warning' : 'default'}
+          variant={message.type === 'error' ? 'destructive' : 'default'}
         >
           <AlertDescription>{message.text}</AlertDescription>
         </Alert>
