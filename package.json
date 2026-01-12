@@ -30,7 +30,7 @@
     "groq-sdk": "^0.37.0",
     "lucide-react": "^0.562.0",
     "next": "16.1.1",
-    "openai": "^6.15.0",
+    "openai": "^6.16.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "react-error-boundary": "^6.0.3",
